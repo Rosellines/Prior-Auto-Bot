@@ -1,14 +1,16 @@
 require('dotenv').config();
 const ethers = require('ethers');
 const readline = require('readline');
+const fs = require('fs').promises;
+const path = require('path');
 
 const PRIOR_ADDRESS = '0xc19Ec2EEBB009b2422514C51F9118026f1cD89ba';
 const USDT_ADDRESS = '0x014397DaEa96CaC46DbEdcbce50A42D5e0152B2E';
 const USDC_ADDRESS = '0x109694D75363A75317A8136D80f50F871E81044e';
-
+const FAUCET_ADDRESS = '0xCa602D9E45E1Ed25105Ee43643ea936B8e2Fd6B7';
 const RPC_URL = 'https://base-sepolia-rpc.publicnode.com/89e4ff0f587fe2a94c7a2c12653f4c55d2bda1186cb6c1c95bd8d8408fbdc014';
-
 const CHAIN_ID = 84532;
+const ROUTER_ADDRESS = '0x0f1DADEcc263eB79AE3e4db0d57c49a8b6178B0B';
 
 const ERC20_ABI = [
   "function approve(address spender, uint256 amount) external returns (bool)",
@@ -16,7 +18,9 @@ const ERC20_ABI = [
   "function allowance(address owner, address spender) external view returns (uint256)"
 ];
 
-const ROUTER_ADDRESS = '0x0f1DADEcc263eB79AE3e4db0d57c49a8b6178B0B';
+const FAUCET_ABI = [
+  "function claimTokens() external"
+];
 
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
 
@@ -39,9 +43,10 @@ const SYMBOLS = {
   swap: '🔄',
   approve: '🔑',
   wait: '⌛',
+  faucet: '💧'
 };
 
-function loadWallets() {
+function loadEnvWallets() {
   const wallets = [];
   let index = 1;
   
@@ -50,7 +55,8 @@ function loadWallets() {
     wallets.push({
       privateKey,
       wallet: new ethers.Wallet(privateKey, provider),
-      label: `Wallet ${index}`
+      label: `Env Wallet ${index}`,
+      source: 'env'
     });
     index++;
   }
@@ -59,15 +65,93 @@ function loadWallets() {
     wallets.push({
       privateKey: process.env.PRIVATE_KEY,
       wallet: new ethers.Wallet(process.env.PRIVATE_KEY, provider),
-      label: 'Default Wallet'
+      label: 'Default Env Wallet',
+      source: 'env'
     });
   }
   
   return wallets;
 }
 
+async function loadGeneratedWallets() {
+  const walletFile = path.join(__dirname, 'wallets.json');
+  try {
+    const data = await fs.readFile(walletFile, 'utf8');
+    const wallets = JSON.parse(data);
+    return wallets.map((w, index) => ({
+      privateKey: w.privateKey,
+      wallet: new ethers.Wallet(w.privateKey, provider),
+      label: `Generated Wallet ${index + 1}`,
+      source: 'generated',
+      mnemonic: w.mnemonic
+    }));
+  } catch (error) {
+    return [];
+  }
+}
+
+async function generateAndSaveWallet() {
+  try {
+    const wallet = ethers.Wallet.createRandom();
+    const walletData = {
+      address: wallet.address,
+      privateKey: wallet.privateKey,
+      mnemonic: wallet.mnemonic.phrase,
+      createdAt: new Date().toISOString()
+    };
+    
+    const walletFile = path.join(__dirname, 'wallets.json');
+    let existingWallets = [];
+    
+    try {
+      const data = await fs.readFile(walletFile, 'utf8');
+      existingWallets = JSON.parse(data);
+      if (!Array.isArray(existingWallets)) existingWallets = [];
+    } catch (error) {}
+    
+    existingWallets.push(walletData);
+    await fs.writeFile(walletFile, JSON.stringify(existingWallets, null, 2));
+    
+    console.log(`${SYMBOLS.success} New wallet generated and saved to wallets.json:`);
+    console.log(`  Address: ${walletData.address}`);
+    console.log(`  Private Key: ${walletData.privateKey}`);
+    console.log(`  Mnemonic: ${walletData.mnemonic}`);
+    console.log(`${SYMBOLS.warning} Please store these credentials securely!`);
+    
+    return {
+      privateKey: walletData.privateKey,
+      wallet: new ethers.Wallet(walletData.privateKey, provider),
+      label: `Generated Wallet ${existingWallets.length}`,
+      source: 'generated',
+      mnemonic: walletData.mnemonic
+    };
+  } catch (error) {
+    console.log(`${SYMBOLS.error} Error generating wallet: ${error.message}`);
+    return null;
+  }
+}
+
+async function claimFaucet(walletObj) {
+  const { wallet, label } = walletObj;
+  const faucetContract = new ethers.Contract(FAUCET_ADDRESS, FAUCET_ABI, wallet);
+  
+  try {
+    console.log(`${SYMBOLS.faucet} ${label} | Claiming tokens from faucet...`);
+    const tx = await faucetContract.claimTokens({
+      gasLimit: ethers.utils.hexlify(200000)
+    });
+    console.log(`${SYMBOLS.pending} ${label} | Faucet claim transaction sent: ${tx.hash}`);
+    const receipt = await tx.wait();
+    console.log(`${SYMBOLS.success} ${label} | Faucet claim confirmed in block ${receipt.blockNumber}`);
+    return true;
+  } catch (error) {
+    console.log(`${SYMBOLS.error} ${label} | Error claiming faucet: ${error.message}`);
+    return false;
+  }
+}
+
 function getRandomAmount() {
-  return (Math.random() * 0.001 + 0.001).toFixed(6); 
+  return (Math.random() * 0.001 + 0.001).toFixed(6);
 }
 
 function getRandomToken() {
@@ -80,7 +164,6 @@ async function approvePrior(walletObj, amount) {
   
   try {
     const amountInWei = ethers.utils.parseUnits(amount, 18);
-
     const currentAllowance = await priorContract.allowance(wallet.address, ROUTER_ADDRESS);
     
     if (currentAllowance.gte(amountInWei)) {
@@ -89,18 +172,11 @@ async function approvePrior(walletObj, amount) {
     }
 
     console.log(`${SYMBOLS.pending} ${label} | Approving PRIOR...`);
-    
-    const tx = await priorContract.approve(ROUTER_ADDRESS, amountInWei, {
-      gasLimit: 60000
-    });
-    
+    const tx = await priorContract.approve(ROUTER_ADDRESS, amountInWei, { gasLimit: 60000 });
     console.log(`${SYMBOLS.pending} ${label} | Approval transaction sent: ${tx.hash}`);
-
     const receipt = await tx.wait();
     console.log(`${SYMBOLS.success} ${label} | Approval confirmed in block ${receipt.blockNumber}`);
-    
     return true;
-    
   } catch (error) {
     console.log(`${SYMBOLS.error} ${label} | Error approving PRIOR: ${error.message}`);
     return false;
@@ -112,7 +188,6 @@ async function swapPrior(walletObj, amount, tokenType) {
   
   try {
     const amountInWei = ethers.utils.parseUnits(amount, 18);
-
     const approved = await approvePrior(walletObj, amount);
     if (!approved) {
       console.log(`${SYMBOLS.warning} ${label} | Approval failed, aborting swap`);
@@ -127,20 +202,15 @@ async function swapPrior(walletObj, amount, tokenType) {
     }
 
     console.log(`${SYMBOLS.pending} ${label} | Swapping ${amount} PRIOR for ${tokenType}...`);
-    
     const tx = await wallet.sendTransaction({
       to: ROUTER_ADDRESS,
       data: txData,
       gasLimit: ethers.utils.hexlify(500000)
     });
-    
     console.log(`${SYMBOLS.pending} ${label} | Swap transaction sent: ${tx.hash}`);
-
     const receipt = await tx.wait();
     console.log(`${SYMBOLS.success} ${label} | Swap confirmed in block ${receipt.blockNumber}`);
-    
     return true;
-    
   } catch (error) {
     console.log(`${SYMBOLS.error} ${label} | Error swapping PRIOR for ${tokenType}: ${error.message}`);
     return false;
@@ -155,7 +225,6 @@ async function checkBalances(walletObj) {
   
   try {
     console.log(`\n${SYMBOLS.wallet} ${label} (${wallet.address.substring(0, 6)}...${wallet.address.substring(38)}):`);
-    
     const priorBalance = await priorContract.balanceOf(wallet.address);
     const usdtBalance = await usdtContract.balanceOf(wallet.address);
     const usdcBalance = await usdcContract.balanceOf(wallet.address);
@@ -165,7 +234,6 @@ async function checkBalances(walletObj) {
     console.log(`  ${SYMBOLS.prior} PRIOR: ${ethers.utils.formatUnits(priorBalance, 18)}`);
     console.log(`  ${SYMBOLS.usdt} USDT: ${ethers.utils.formatUnits(usdtBalance, 6)}`);
     console.log(`  ${SYMBOLS.usdc} USDC: ${ethers.utils.formatUnits(usdcBalance, 6)}`);
-    
   } catch (error) {
     console.log(`${SYMBOLS.error} ${label} | Error checking balances: ${error.message}`);
   }
@@ -188,13 +256,10 @@ async function runWalletSwaps(walletObj, count) {
     const token = getRandomToken();
     
     console.log(`\n${SYMBOLS.swap} ${label} | Swap ${i+1}/${count}: ${amount} PRIOR for ${token}`);
-    
     const success = await swapPrior(walletObj, amount, token);
     if (success) successCount++;
     
-    if (i < count - 1) {
-      await delay();
-    }
+    if (i < count - 1) await delay();
   }
   
   console.log(`\n${SYMBOLS.info} ${label} | Completed ${successCount}/${count} swap operations successfully`);
@@ -202,25 +267,28 @@ async function runWalletSwaps(walletObj, count) {
   return successCount;
 }
 
-async function runAllWallets(swapsPerWallet) {
-  const wallets = loadWallets();
+async function runSelectedWallets(wallets, swapsPerWallet) {
   let totalSuccess = 0;
   let totalSwaps = swapsPerWallet * wallets.length;
   
-  console.log(`\n${SYMBOLS.info} Found ${wallets.length} wallet(s)`);
+  console.log(`\n${SYMBOLS.info} Processing ${wallets.length} wallet(s)`);
   
   for (let i = 0; i < wallets.length; i++) {
     const walletObj = wallets[i];
-    console.log(`\n${SYMBOLS.wallet} Processing wallet ${i+1}/${wallets.length}: ${walletObj.label}`);
+    console.log(`\n${SYMBOLS.wallet} Processing wallet ${i+1}/${wallets.length}: ${walletObj.label} (${walletObj.source})`);
+    
+    // Claim faucet first
+    await claimFaucet(walletObj);
+    await delay();
+    
+    // Then proceed with swaps
     const successes = await runWalletSwaps(walletObj, swapsPerWallet);
     totalSuccess += successes;
     
-    if (i < wallets.length - 1) {
-      await delay();
-    }
+    if (i < wallets.length - 1) await delay();
   }
   
-  console.log(`\n${SYMBOLS.info} All wallets processed. Total success: ${totalSuccess}/${totalSwaps}`);
+  console.log(`\n${SYMBOLS.info} All selected wallets processed. Total swap success: ${totalSuccess}/${totalSwaps}`);
 }
 
 async function main() {
@@ -236,18 +304,51 @@ ${cyan}==========================================${reset}
   console.log(banner);
   console.log(`${SYMBOLS.info} Bot started on ${new Date().toISOString()}`);
   
-  const wallets = loadWallets();
-  if (wallets.length === 0) {
-    console.log(`${SYMBOLS.error} No wallets found. Please check your .env file.`);
-    console.log(`Format should be:`);
-    console.log(`PRIVATE_KEY_1=your_private_key_1`);
-    console.log(`PRIVATE_KEY_2=your_private_key_2`);
-    process.exit(1);
-  }
+  const envWallets = loadEnvWallets();
+  const generatedWallets = await loadGeneratedWallets();
   
+  console.log(`\n${SYMBOLS.info} Available wallets:`);
+  console.log(`  Env wallets: ${envWallets.length}`);
+  console.log(`  Generated wallets: ${generatedWallets.length}`);
+  
+  rl.question(`${SYMBOLS.info} Select operation:\n1. Generate new wallet\n2. Run swaps with env wallets\n3. Run swaps with generated wallets\n4. Run swaps with all wallets\nEnter choice (1-4): `, async (choice) => {
+    if (choice === '1') {
+      await generateAndSaveWallet();
+      rl.close();
+    } else if (choice === '2') {
+      if (envWallets.length === 0) {
+        console.log(`${SYMBOLS.error} No env wallets found. Please check your .env file`);
+        rl.close();
+        return;
+      }
+      await processSwaps(envWallets);
+    } else if (choice === '3') {
+      if (generatedWallets.length === 0) {
+        console.log(`${SYMBOLS.error} No generated wallets found. Please generate some first`);
+        rl.close();
+        return;
+      }
+      await processSwaps(generatedWallets);
+    } else if (choice === '4') {
+      const allWallets = [...envWallets, ...generatedWallets];
+      if (allWallets.length === 0) {
+        console.log(`${SYMBOLS.error} No wallets found in either env or generated sources`);
+        rl.close();
+        return;
+      }
+      await processSwaps(allWallets);
+    } else {
+      console.log(`${SYMBOLS.error} Invalid choice. Please select 1-4`);
+      rl.close();
+      return;
+    }
+  });
+}
+
+async function processSwaps(wallets) {
   console.log(`${SYMBOLS.wallet} Loaded ${wallets.length} wallet(s):`);
   wallets.forEach((w, i) => {
-    console.log(`  ${i+1}. ${w.label} (${w.wallet.address.substring(0, 6)}...${w.wallet.address.substring(38)})`);
+    console.log(`  ${i+1}. ${w.label} (${w.source}) (${w.wallet.address.substring(0, 6)}...${w.wallet.address.substring(38)})`);
   });
   
   rl.question(`\n${SYMBOLS.info} How many swaps to perform per wallet? `, async (answer) => {
@@ -256,13 +357,13 @@ ${cyan}==========================================${reset}
     if (isNaN(swapCount) || swapCount <= 0) {
       console.log(`${SYMBOLS.error} Please provide a valid number of swaps`);
       rl.close();
-      process.exit(1);
+      return;
     }
     
-    console.log(`${SYMBOLS.info} Will perform ${swapCount} swaps for each of ${wallets.length} wallet(s) (total: ${swapCount * wallets.length})`);
+    console.log(`${SYMBOLS.info} Will claim faucet and perform ${swapCount} swaps for each of ${wallets.length} wallet(s)`);
     rl.question(`${SYMBOLS.info} Proceed? (y/n) `, async (confirm) => {
       if (confirm.toLowerCase() === 'y' || confirm.toLowerCase() === 'yes') {
-        await runAllWallets(swapCount);
+        await runSelectedWallets(wallets, swapCount);
       } else {
         console.log(`${SYMBOLS.info} Operation canceled`);
       }
