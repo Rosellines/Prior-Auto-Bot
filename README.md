@@ -3,7 +3,8 @@
 This bot automates swapping PRIOR tokens for USDT/USDC on the Base Sepolia testnet to help users participate in the PRIOR airdrop activity.
 
 ## Features
-
+- added faucet (prior) 
+- added wallet creation 
 - Support for multiple wallets through environment variables
 - Automatic approval of PRIOR tokens
 - Random amount swapping (between 0.001 and 0.002 PRIOR)
