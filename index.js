@@ -7,6 +7,7 @@ const path = require('path');
 const PRIOR_ADDRESS = '0xc19Ec2EEBB009b2422514C51F9118026f1cD89ba';
 const USDT_ADDRESS = '0x014397DaEa96CaC46DbEdcbce50A42D5e0152B2E';
 const USDC_ADDRESS = '0x109694D75363A75317A8136D80f50F871E81044e';
+const FAUCET_ADDRESS = '0xCa602D9E45E1Ed25105Ee43643ea936B8e2Fd6B7';
 const RPC_URL = 'https://base-sepolia-rpc.publicnode.com/89e4ff0f587fe2a94c7a2c12653f4c55d2bda1186cb6c1c95bd8d8408fbdc014';
 const CHAIN_ID = 84532;
 const ROUTER_ADDRESS = '0x0f1DADEcc263eB79AE3e4db0d57c49a8b6178B0B';
@@ -15,6 +16,10 @@ const ERC20_ABI = [
   "function approve(address spender, uint256 amount) external returns (bool)",
   "function balanceOf(address account) external view returns (uint256)",
   "function allowance(address owner, address spender) external view returns (uint256)"
+];
+
+const FAUCET_ABI = [
+  "function claimTokens() external"
 ];
 
 const provider = new ethers.providers.JsonRpcProvider(RPC_URL);
@@ -38,6 +43,7 @@ const SYMBOLS = {
   swap: '🔄',
   approve: '🔑',
   wait: '⌛',
+  faucet: '💧'
 };
 
 function loadEnvWallets() {
@@ -100,12 +106,8 @@ async function generateAndSaveWallet() {
     try {
       const data = await fs.readFile(walletFile, 'utf8');
       existingWallets = JSON.parse(data);
-      if (!Array.isArray(existingWallets)) {
-        existingWallets = [];
-      }
-    } catch (error) {
-      // File doesn't exist yet
-    }
+      if (!Array.isArray(existingWallets)) existingWallets = [];
+    } catch (error) {}
     
     existingWallets.push(walletData);
     await fs.writeFile(walletFile, JSON.stringify(existingWallets, null, 2));
@@ -126,6 +128,25 @@ async function generateAndSaveWallet() {
   } catch (error) {
     console.log(`${SYMBOLS.error} Error generating wallet: ${error.message}`);
     return null;
+  }
+}
+
+async function claimFaucet(walletObj) {
+  const { wallet, label } = walletObj;
+  const faucetContract = new ethers.Contract(FAUCET_ADDRESS, FAUCET_ABI, wallet);
+  
+  try {
+    console.log(`${SYMBOLS.faucet} ${label} | Claiming tokens from faucet...`);
+    const tx = await faucetContract.claimTokens({
+      gasLimit: ethers.utils.hexlify(200000)
+    });
+    console.log(`${SYMBOLS.pending} ${label} | Faucet claim transaction sent: ${tx.hash}`);
+    const receipt = await tx.wait();
+    console.log(`${SYMBOLS.success} ${label} | Faucet claim confirmed in block ${receipt.blockNumber}`);
+    return true;
+  } catch (error) {
+    console.log(`${SYMBOLS.error} ${label} | Error claiming faucet: ${error.message}`);
+    return false;
   }
 }
 
@@ -250,18 +271,24 @@ async function runSelectedWallets(wallets, swapsPerWallet) {
   let totalSuccess = 0;
   let totalSwaps = swapsPerWallet * wallets.length;
   
-  console.log(`\n${SYMBOLS.info} Found ${wallets.length} wallet(s)`);
+  console.log(`\n${SYMBOLS.info} Processing ${wallets.length} wallet(s)`);
   
   for (let i = 0; i < wallets.length; i++) {
     const walletObj = wallets[i];
     console.log(`\n${SYMBOLS.wallet} Processing wallet ${i+1}/${wallets.length}: ${walletObj.label} (${walletObj.source})`);
+    
+    // Claim faucet first
+    await claimFaucet(walletObj);
+    await delay();
+    
+    // Then proceed with swaps
     const successes = await runWalletSwaps(walletObj, swapsPerWallet);
     totalSuccess += successes;
     
     if (i < wallets.length - 1) await delay();
   }
   
-  console.log(`\n${SYMBOLS.info} All selected wallets processed. Total success: ${totalSuccess}/${totalSwaps}`);
+  console.log(`\n${SYMBOLS.info} All selected wallets processed. Total swap success: ${totalSuccess}/${totalSwaps}`);
 }
 
 async function main() {
@@ -333,7 +360,7 @@ async function processSwaps(wallets) {
       return;
     }
     
-    console.log(`${SYMBOLS.info} Will perform ${swapCount} swaps for each of ${wallets.length} wallet(s) (total: ${swapCount * wallets.length})`);
+    console.log(`${SYMBOLS.info} Will claim faucet and perform ${swapCount} swaps for each of ${wallets.length} wallet(s)`);
     rl.question(`${SYMBOLS.info} Proceed? (y/n) `, async (confirm) => {
       if (confirm.toLowerCase() === 'y' || confirm.toLowerCase() === 'yes') {
         await runSelectedWallets(wallets, swapCount);
