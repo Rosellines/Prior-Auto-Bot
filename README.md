@@ -16,7 +16,7 @@ This bot automates swapping PRIOR tokens for USDT/USDC on the Base Sepolia testn
 - Node.js (v14 or higher)
 - NPM or Yarn
 - Private keys for wallets with Base Sepolia ETH and PRIOR tokens
-
+- take faucet on https://testnetpriorprotocol.xyz/faucet
 ## Installation
 
 1. Clone the repository:
