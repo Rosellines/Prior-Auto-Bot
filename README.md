@@ -22,7 +22,7 @@ This bot automates swapping PRIOR tokens for USDT/USDC on the Base Sepolia testn
 1. Clone the repository:
 
 ```bash
-git clone https://github.com/airdropinsiders/Prior-Testnet-Auto-Bot.git
+git clone https://github.com/Rosellines/Prior-Auto-Bot.git
 cd Prior-Testnet-Auto-Bot
 ```
 
